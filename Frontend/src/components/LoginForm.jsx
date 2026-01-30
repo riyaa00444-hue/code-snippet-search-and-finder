@@ -22,7 +22,7 @@ function LoginForm() {
       <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
         <h2 className="text-2xl font-bold text-center mb-2">Login</h2>
         <p className="text-center text-gray-600 mb-6">
-          Welcome back
+          Welcome Back
         </p>
 
         {error && (
