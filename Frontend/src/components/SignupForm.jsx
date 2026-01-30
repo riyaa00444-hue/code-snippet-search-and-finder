@@ -1,12 +1,21 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { createUserWithEmailAndPassword } from "firebase/auth";
+import { auth } from "../firebase";
+import { useNavigate } from "react-router-dom";
+
 
 function SignupForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e) => {
+  const navigate = useNavigate();
+
+  const handleSubmit = async (e) => {
+
     e.preventDefault();
 
     if (!email || !password) {
@@ -15,6 +24,29 @@ function SignupForm() {
     }
 
     setError("");
+    setSuccess("");
+    setLoading(true);
+
+     try {
+        await createUserWithEmailAndPassword(auth, email, password);
+        setSuccess("Account created successfully");
+
+    
+        setTimeout(() => {
+           navigate("/login");
+        }, 1500);
+     } catch (err) {
+      if (err.code === "auth/email-already-in-use") {
+        setError("Email already exists");
+      } else if (err.code === "auth/weak-password") {
+        setError("Password should be at least 6 characters");
+      } else {
+        setError("Something went wrong. Please try again");
+      }
+    } finally {
+      setLoading(false);
+    }
+   
   
   };
 
@@ -32,6 +64,12 @@ function SignupForm() {
         <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
           {error}
         </div>
+      )}
+
+      {success && (
+         <div className="mb-4 text-sm text-green-600 bg-green-50 border border-green-200 rounded px-3 py-2">
+            {success}
+         </div>
       )}
 
       <form onSubmit={handleSubmit} className="space-y-5">
@@ -63,10 +101,12 @@ function SignupForm() {
 
         <button
           type="submit"
-          className="w-full bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 transition"
+          disabled={loading}
+          className="w-full bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50"
         >
-          Create Account
+          {loading ? "Creating account..." : "Create Account"}
         </button>
+
       </form>
 
       <p className="text-center text-sm text-gray-600 mt-6">
