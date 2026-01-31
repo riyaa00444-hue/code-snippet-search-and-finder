@@ -1,12 +1,18 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { auth } from "../firebase";
 
 function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e) => {
+  const navigate = useNavigate();
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
     if (!email || !password) {
@@ -15,20 +21,47 @@ function LoginForm() {
     }
 
     setError("");
+    setSuccess("");
+    setLoading(true);
+
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+      setSuccess("Login successful");
+
+      setTimeout(() => {
+        navigate("/dashboard");
+      }, 1000);
+    } catch (err) {
+      if (err.code === "auth/user-not-found") {
+        setError("User not found");
+      } else if (err.code === "auth/wrong-password") {
+        setError("Incorrect password");
+      } else if (err.code === "auth/invalid-credential") {
+        setError("Invalid login credentials");
+      } else {
+        setError("Something went wrong. Please try again");
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100">
       <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
         <h2 className="text-2xl font-bold text-center mb-2">Login</h2>
-        <p className="text-center text-gray-600 mb-6">
-          Welcome Back
-        </p>
+        <p className="text-center text-gray-600 mb-6">Welcome Back</p>
 
         {error && (
-          <p className="text-red-500 text-sm mb-4 text-center">
+          <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 px-3 py-2 rounded">
             {error}
-          </p>
+          </div>
+        )}
+
+        {success && (
+          <div className="mb-4 text-sm text-green-600 bg-green-50 border border-green-200 px-3 py-2 rounded">
+            {success}
+          </div>
         )}
 
         <form onSubmit={handleSubmit}>
@@ -54,9 +87,12 @@ function LoginForm() {
 
           <button
             type="submit"
-            className="w-full bg-blue-600 text-white py-2 rounded"
+            disabled={loading}
+            className={`w-full py-2 rounded text-white ${
+              loading ? "bg-blue-400" : "bg-blue-600 hover:bg-blue-700"
+            }`}
           >
-            Login
+            {loading ? "Logging in..." : "Login"}
           </button>
         </form>
 
@@ -77,5 +113,3 @@ function LoginForm() {
 }
 
 export default LoginForm;
-
-
