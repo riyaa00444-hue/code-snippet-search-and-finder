@@ -1,96 +1,180 @@
-"""
-Backend - FastAPI Application
-
-Available Endpoints:
-    GET /                    - Welcome message
-    GET /health              - Health check endpoint
-    GET /api/random-quote    - Sample endpoint to connect Frontend and Backend (generates random quote using Gemini LLM)
-
-To run this server:
-    uvicorn main:app --reload
-
-The server will start at: http://localhost:8000
-API documentation will be available at: http://localhost:8000/docs
-
-Setup:
-    1. Install dependencies: pip install -r requirements.txt
-    2. Get your Google API key from: https://makersuite.google.com/app/apikey
-    3. Create a .env file in the Backend directory with: GOOGLE_API_KEY=your_api_key_here
-    4. Run the server: uvicorn main:app --reload
-"""
-
 import os
+import sqlite3
+from datetime import datetime
+from typing import List
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import google.generativeai as genai
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+# -------------------- ENV --------------------
 load_dotenv()
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-# Initialize Google Generative AI
-api_key = os.getenv("GOOGLE_API_KEY")
-if not api_key:
-    print("Warning: GOOGLE_API_KEY not found in environment variables.")
-    print("Please create a .env file with: GOOGLE_API_KEY=your_api_key_here")
-    genai_configured = False
-else:
-    genai.configure(api_key=api_key)
-    genai_configured = True
+if not GOOGLE_API_KEY:
+    raise RuntimeError("GOOGLE_API_KEY not found in .env")
 
-app = FastAPI(title="Backend API", version="0.1.0")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "database.db")
 
-# Enable CORS (Cross-Origin Resource Sharing) to allow frontend to connect
-# This is necessary because the frontend runs on a different port than the backend
-# Without CORS, browsers will block requests from frontend to backend
+# -------------------- APP --------------------
+app = FastAPI(title="Code Snippet Finder API")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],  # Vite default port and common React port
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all HTTP methods (GET, POST, PUT, DELETE, etc.)
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-@app.get("/")
-async def root():
-    return {"message": "Hello from AI Interviewer Backend!"}
+# -------------------- DATABASE --------------------
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
 
-@app.get("/api/random-quote")
-async def get_random_quote():
-    """
-    Sample endpoint to connect Frontend and Backend.
-    This is a simple example endpoint that generates a random inspirational quote using Google's Gemini LLM.
-    Students can use this endpoint to practice connecting their React frontend to the FastAPI backend.
-    
-    Returns:
-        JSON response with AI-generated random quote
-    """
-    if not genai_configured:
-        raise HTTPException(
-            status_code=500,
-            detail="Google API key not configured. Please set GOOGLE_API_KEY in your .env file."
+def init_db():
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS repositories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            name TEXT NOT NULL,
+            path TEXT NOT NULL,
+            description TEXT,
+            file_list TEXT,
+            file_count INTEGER,
+            indexed INTEGER DEFAULT 0,
+            analyzed_at TEXT,
+            created_at TEXT,
+            updated_at TEXT
         )
-    
+        """
+    )
+
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+# -------------------- SCHEMAS --------------------
+class AddRepositoryRequest(BaseModel):
+    name: str
+    path: str
+    type: str  # "connect" or "upload"
+
+
+class RepositoryResponse(BaseModel):
+    id: int
+    name: str
+    description: str
+    file_list: List[str]
+    analyzed_at: str
+
+# -------------------- HELPERS --------------------
+def analyze_repository(repo_path: str) -> dict:
+    if not os.path.exists(repo_path):
+        raise HTTPException(status_code=400, detail="Repository path does not exist")
+
+    files = []
+    for root, _, filenames in os.walk(repo_path):
+        for f in filenames:
+            files.append(os.path.relpath(os.path.join(root, f), repo_path))
+
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        temperature=0.2,
+        google_api_key=GOOGLE_API_KEY,
+    )
+
+    prompt = f"""
+    You are analyzing a code repository.
+
+    File list:
+    {files[:50]}
+
+    Explain briefly:
+    - What this repository does
+    - What kind of project it is
+    """
+
+    response = llm.invoke(prompt)
+
+    return {
+        "description": response.content,
+        "files": files,
+    }
+
+
+def save_repository(
+    name: str,
+    path: str,
+    description: str,
+    files: List[str],
+):
+    conn = get_db()
+    cursor = conn.cursor()
+
+    now = datetime.utcnow().isoformat()
+
+    cursor.execute(
+        """
+        INSERT INTO repositories
+        (user_id, name, path, description, file_list, file_count, indexed, analyzed_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            1,  # temporary user_id
+            name,
+            path,
+            description,
+            ",".join(files),
+            len(files),
+            0,
+            now,
+            now,
+            now,
+        ),
+    )
+
+    repo_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    return repo_id, now
+
+# -------------------- API --------------------
+@app.post("/api/repositories", response_model=RepositoryResponse)
+def add_repository(repo: AddRepositoryRequest):
     try:
-        # Make a simple LLM call to generate a random quote
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        response = model.generate_content("Tell me a random inspirational quote")
-        
-        return {
-            "success": True,
-            "message": "Random quote generated successfully",
-            "data": {
-                "quote": response.text,
-            }
-        }
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error generating quote: {str(e)}"
+        analysis = analyze_repository(repo.path)
+
+        repo_id, analyzed_at = save_repository(
+            name=repo.name,
+            path=repo.path,
+            description=analysis["description"],
+            files=analysis["files"],
         )
 
-    
+        return {
+            "id": repo_id,
+            "name": repo.name,
+            "description": analysis["description"],
+            "file_list": analysis["files"],
+            "analyzed_at": analyzed_at,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
