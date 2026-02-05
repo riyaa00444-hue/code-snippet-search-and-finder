@@ -13,7 +13,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 
-# ================= ENV =================
+
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
@@ -23,7 +23,6 @@ VECTOR_DIR = os.path.join(BASE_DIR, "vector_store")
 
 os.makedirs(VECTOR_DIR, exist_ok=True)
 
-# ================= APP =================
 app = FastAPI(title="Code Snippet Finder API")
 
 app.add_middleware(
@@ -44,7 +43,6 @@ def init_db():
     conn = get_db()
     cur = conn.cursor()
 
-    
     cur.execute("""
     CREATE TABLE IF NOT EXISTS repositories (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,7 +56,6 @@ def init_db():
     )
     """)
 
-   
     cur.execute("""
     CREATE TABLE IF NOT EXISTS code_snippets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,6 +125,7 @@ def save_repository(name, path, description, files):
     conn.close()
     return repo_id, now
 
+
 @app.post("/api/repositories", response_model=RepositoryResponse)
 def add_repository(repo: AddRepositoryRequest):
     desc, files = analyze_repository(repo.path)
@@ -150,6 +148,67 @@ def list_repositories():
     return [dict(r) for r in rows]
 
 
+
+
+def get_repository_details(repo_id: int):
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, name, description, file_list, indexed
+        FROM repositories
+        WHERE id = ?
+    """, (repo_id,))
+
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row["description"],
+        "indexed": bool(row["indexed"]),
+        "files": row["file_list"].split(",") if row["file_list"] else []
+    }
+
+
+@app.get("/api/repositories/{repo_id}")
+def get_repository(repo_id: int):
+    repo = get_repository_details(repo_id)
+
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    return repo
+
+@app.get("/api/repositories/{repo_id}/file")
+def get_file_content(repo_id: int, path: str):
+    conn = get_db()
+
+    repo = conn.execute(
+        "SELECT path FROM repositories WHERE id = ?", (repo_id,)
+    ).fetchone()
+
+    conn.close()
+
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    file_path = os.path.join(repo["path"], path)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
+
+
+
+
+
 def parse_python_file(file_path):
     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
         source = f.read()
@@ -167,6 +226,7 @@ def parse_python_file(file_path):
             })
 
     return chunks
+
 
 @app.post("/api/repositories/{repo_id}/index")
 def index_repository(repo_id: int):
@@ -199,7 +259,6 @@ def index_repository(repo_id: int):
         vector_store.save_local(VECTOR_DIR)
 
     except Exception:
-        # quota-safe fallback
         pass
 
     for s in snippets:
