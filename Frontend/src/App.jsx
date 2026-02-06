@@ -4,6 +4,8 @@ import Landing from "./pages/Landing";
 import Signup from "./pages/Signup";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
+import RepositoryDetail from "./pages/RepositoryDetail";
+
 
 import ProtectedRoute from "./components/ProtectedRoute";
 
@@ -21,6 +23,15 @@ function App() {
           </ProtectedRoute>
         }
       />
+      <Route
+        path="/repositories/:id"
+        element={
+          <ProtectedRoute>
+            <RepositoryDetail />
+          </ProtectedRoute>
+        }
+      />
+
     </Routes>
   );
 }
