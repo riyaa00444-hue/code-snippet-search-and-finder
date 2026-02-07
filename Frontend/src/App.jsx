@@ -5,7 +5,7 @@ import Signup from "./pages/Signup";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import RepositoryDetail from "./pages/RepositoryDetail";
-
+import Search from "./pages/Search";
 
 import ProtectedRoute from "./components/ProtectedRoute";
 
@@ -15,6 +15,7 @@ function App() {
       <Route path="/" element={<Landing />} />
       <Route path="/signup" element={<Signup />} />
       <Route path="/login" element={<Login />} />
+
       <Route
         path="/dashboard"
         element={
@@ -23,6 +24,7 @@ function App() {
           </ProtectedRoute>
         }
       />
+
       <Route
         path="/repositories/:id"
         element={
@@ -32,6 +34,14 @@ function App() {
         }
       />
 
+      <Route
+        path="/search"
+        element={
+          <ProtectedRoute>
+            <Search />
+          </ProtectedRoute>
+        }
+      />
     </Routes>
   );
 }

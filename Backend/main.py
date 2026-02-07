@@ -2,18 +2,18 @@ import os
 import ast
 import sqlite3
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
 
-
+# -------------------- ENV --------------------
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
@@ -23,6 +23,7 @@ VECTOR_DIR = os.path.join(BASE_DIR, "vector_store")
 
 os.makedirs(VECTOR_DIR, exist_ok=True)
 
+# -------------------- APP --------------------
 app = FastAPI(title="Code Snippet Finder API")
 
 app.add_middleware(
@@ -33,6 +34,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# -------------------- DATABASE --------------------
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -61,10 +63,16 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         repository_id INTEGER,
         file_path TEXT,
-        code TEXT,
-        symbol_name TEXT,
-        start_line INTEGER,
-        end_line INTEGER
+        code TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS search_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        query TEXT,
+        result_count INTEGER,
+        searched_at TEXT
     )
     """)
 
@@ -74,70 +82,68 @@ def init_db():
 
 init_db()
 
+# -------------------- SCHEMAS --------------------
 class AddRepositoryRequest(BaseModel):
     name: str
     path: str
-    type: str
 
 
-class RepositoryResponse(BaseModel):
-    id: int
-    name: str
-    description: str
-    file_list: List[str]
-    analyzed_at: str
-
-
+# -------------------- HELPERS --------------------
 def analyze_repository(repo_path: str):
     if not os.path.exists(repo_path):
-        raise HTTPException(400, "Repository path does not exist")
+        raise HTTPException(status_code=400, detail="Repository path does not exist")
 
     files = []
     for root, _, filenames in os.walk(repo_path):
         for f in filenames:
             files.append(os.path.relpath(os.path.join(root, f), repo_path))
 
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        temperature=0.2,
-        google_api_key=GOOGLE_API_KEY,
-    )
-
-    prompt = f"Explain briefly what this repository does:\n{files[:30]}"
-    description = llm.invoke(prompt).content
+    description = "Repository analysis not available"
+    if GOOGLE_API_KEY:
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            temperature=0.2,
+            google_api_key=GOOGLE_API_KEY,
+        )
+        prompt = f"Explain briefly what this repository does:\n{files[:30]}"
+        description = llm.invoke(prompt).content
 
     return description, files
 
 
-def save_repository(name, path, description, files):
+def parse_python_file(file_path: str):
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        source = f.read()
+
+    tree = ast.parse(source)
+    snippets = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            snippets.append(ast.get_source_segment(source, node))
+
+    return snippets
+
+
+# -------------------- REPOSITORIES --------------------
+@app.post("/api/repositories")
+def add_repository(repo: AddRepositoryRequest):
+    desc, files = analyze_repository(repo.path)
+
     conn = get_db()
     cur = conn.cursor()
-
     now = datetime.utcnow().isoformat()
+
     cur.execute("""
     INSERT INTO repositories
     (name, path, description, file_list, file_count, analyzed_at)
     VALUES (?, ?, ?, ?, ?, ?)
-    """, (name, path, description, ",".join(files), len(files), now))
+    """, (repo.name, repo.path, desc, ",".join(files), len(files), now))
 
-    repo_id = cur.lastrowid
     conn.commit()
     conn.close()
-    return repo_id, now
 
-
-@app.post("/api/repositories", response_model=RepositoryResponse)
-def add_repository(repo: AddRepositoryRequest):
-    desc, files = analyze_repository(repo.path)
-    repo_id, analyzed_at = save_repository(repo.name, repo.path, desc, files)
-
-    return {
-        "id": repo_id,
-        "name": repo.name,
-        "description": desc,
-        "file_list": files,
-        "analyzed_at": analyzed_at
-    }
+    return {"name": repo.name, "description": desc, "files": files}
 
 
 @app.get("/api/repositories")
@@ -148,86 +154,32 @@ def list_repositories():
     return [dict(r) for r in rows]
 
 
-
-
-def get_repository_details(repo_id: int):
+@app.get("/api/repositories/{repo_id}")
+def get_repository_detail(repo_id: int):
     conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT id, name, description, file_list, indexed
-        FROM repositories
-        WHERE id = ?
-    """, (repo_id,))
-
-    row = cur.fetchone()
+    repo = conn.execute(
+        "SELECT * FROM repositories WHERE id = ?", (repo_id,)
+    ).fetchone()
     conn.close()
 
-    if not row:
-        return None
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    files = repo["file_list"].split(",") if repo["file_list"] else []
 
     return {
-        "id": row["id"],
-        "name": row["name"],
-        "description": row["description"],
-        "indexed": bool(row["indexed"]),
-        "files": row["file_list"].split(",") if row["file_list"] else []
+        "id": repo["id"],
+        "name": repo["name"],
+        "path": repo["path"],
+        "description": repo["description"],
+        "files": files,
+        "file_count": repo["file_count"],
+        "indexed": repo["indexed"],
+        "analyzed_at": repo["analyzed_at"],
     }
 
 
-@app.get("/api/repositories/{repo_id}")
-def get_repository(repo_id: int):
-    repo = get_repository_details(repo_id)
-
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found")
-
-    return repo
-
-@app.get("/api/repositories/{repo_id}/file")
-def get_file_content(repo_id: int, path: str):
-    conn = get_db()
-
-    repo = conn.execute(
-        "SELECT path FROM repositories WHERE id = ?", (repo_id,)
-    ).fetchone()
-
-    conn.close()
-
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found")
-
-    file_path = os.path.join(repo["path"], path)
-
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-        return f.read()
-
-
-
-
-
-def parse_python_file(file_path):
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-        source = f.read()
-
-    tree = ast.parse(source)
-    chunks = []
-
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-            chunks.append({
-                "name": node.name,
-                "code": ast.get_source_segment(source, node),
-                "start": node.lineno,
-                "end": node.end_lineno,
-            })
-
-    return chunks
-
-
+# -------------------- INDEXING --------------------
 @app.post("/api/repositories/{repo_id}/index")
 def index_repository(repo_id: int):
     conn = get_db()
@@ -240,49 +192,87 @@ def index_repository(repo_id: int):
 
     snippets = []
     for root, _, files in os.walk(repo["path"]):
+        if "node_modules" in root or ".git" in root:
+            continue
         for f in files:
             if f.endswith(".py"):
                 snippets += parse_python_file(os.path.join(root, f))
 
     if not snippets:
-        raise HTTPException(400, "No code files found")
+        raise HTTPException(400, "No Python code found")
 
-    texts = [s["code"] for s in snippets]
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
 
-    try:
-        embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001",
-            google_api_key=GOOGLE_API_KEY
-        )
+    metadatas = []
+    for code in snippets:
+        cur = conn.execute("""
+        INSERT INTO code_snippets (repository_id, file_path, code)
+        VALUES (?, ?, ?)
+        """, (repo_id, repo["path"], code))
+        metadatas.append({"snippet_id": cur.lastrowid, "repository_id": repo_id})
 
-        vector_store = FAISS.from_texts(texts, embeddings)
-        vector_store.save_local(VECTOR_DIR)
-
-    except Exception:
-        pass
-
-    for s in snippets:
-        conn.execute("""
-        INSERT INTO code_snippets
-        (repository_id, file_path, code, symbol_name, start_line, end_line)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            repo_id,
-            repo["path"],
-            s["code"],
-            s["name"],
-            s["start"],
-            s["end"],
-        ))
+    vector_store = FAISS.from_texts(snippets, embeddings, metadatas=metadatas)
+    vector_store.save_local(VECTOR_DIR)
 
     conn.execute(
         "UPDATE repositories SET indexed = 1 WHERE id = ?", (repo_id,)
     )
-
     conn.commit()
     conn.close()
 
-    return {
-        "status": "indexed",
-        "snippets_count": len(snippets)
-    }
+    return {"status": "indexed", "snippets": len(snippets)}
+
+
+# -------------------- ISSUE 12: SEARCH --------------------
+def save_search_history(query: str, count: int):
+    conn = get_db()
+    conn.execute("""
+    INSERT INTO search_history (query, result_count, searched_at)
+    VALUES (?, ?, ?)
+    """, (query, count, datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+@app.get("/api/search")
+def search_code(
+    query: str = Query(..., min_length=3),
+    repoId: Optional[int] = Query(None),
+):
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+    vector_store = FAISS.load_local(
+        VECTOR_DIR, embeddings, allow_dangerous_deserialization=True
+    )
+
+    results = vector_store.similarity_search_with_score(query, k=5)
+
+    conn = get_db()
+    matches = []
+
+    for doc, score in results:
+        if repoId and doc.metadata.get("repository_id") != repoId:
+            continue
+
+        row = conn.execute("""
+        SELECT id, repository_id, file_path, code
+        FROM code_snippets WHERE id = ?
+        """, (doc.metadata["snippet_id"],)).fetchone()
+
+        if row:
+            matches.append({
+                "id": row["id"],
+                "repository_id": row["repository_id"],
+                "file_path": row["file_path"],
+                "code_preview": row["code"][:300],
+                "similarity_score": float(score),
+            })
+
+    conn.close()
+    save_search_history(query, len(matches))
+
+    return {"query": query, "count": len(matches), "results": matches}

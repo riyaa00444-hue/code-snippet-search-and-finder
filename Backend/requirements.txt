@@ -8,3 +8,5 @@ langchain-google-genai
 google-generativeai
 faiss-cpu
 langchain-community
+sentence-transformers
+torch
