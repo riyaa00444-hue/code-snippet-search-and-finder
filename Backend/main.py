@@ -15,7 +15,7 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 
-# -------------------- ENV --------------------
+
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
@@ -25,7 +25,7 @@ VECTOR_DIR = os.path.join(BASE_DIR, "vector_store")
 
 os.makedirs(VECTOR_DIR, exist_ok=True)
 
-# -------------------- APP --------------------
+
 app = FastAPI(title="Code Snippet Finder API")
 
 app.add_middleware(
@@ -36,7 +36,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -------------------- DB --------------------
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -84,12 +84,12 @@ def init_db():
 
 init_db()
 
-# -------------------- MODELS --------------------
+
 class AddRepositoryRequest(BaseModel):
     name: str
     path: str
 
-# -------------------- HELPERS --------------------
+
 def analyze_repository(repo_path: str):
     if not os.path.exists(repo_path):
         raise HTTPException(400, "Repository path does not exist")
@@ -131,7 +131,6 @@ def parse_code_file(file_path: str) -> List[str]:
         except Exception:
             return [source]
 
-    # JS / TS / JSX / TSX → index whole file
     return [source]
 
 
@@ -146,7 +145,31 @@ def get_code_snippet_by_id(snippet_id: int):
     conn.close()
     return dict(row) if row else None
 
-# -------------------- API --------------------
+
+def get_search_history():
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT id, query, result_count, searched_at
+        FROM search_history
+        ORDER BY searched_at DESC
+    """).fetchall()
+    conn.close()
+
+    return [dict(r) for r in rows]
+
+
+def delete_search_history(history_id: int):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM search_history WHERE id = ?",
+        (history_id,)
+    )
+    conn.commit()
+    conn.close()
+
+
+
 @app.post("/api/repositories")
 def add_repository(repo: AddRepositoryRequest):
     desc, files = analyze_repository(repo.path)
@@ -317,3 +340,15 @@ Explain this code:
 """).content
 
     return {"snippet_id": snippet_id, "explanation": explanation}
+
+
+@app.get("/api/history")
+def fetch_history():
+    return get_search_history()
+
+
+@app.delete("/api/history/{history_id}")
+def remove_history(history_id: int):
+    delete_search_history(history_id)
+    return {"status": "deleted"}
+

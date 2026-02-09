@@ -7,6 +7,8 @@ import Dashboard from "./pages/Dashboard";
 import RepositoryDetail from "./pages/RepositoryDetail";
 import Search from "./pages/Search";
 import CodeDetail from "./pages/CodeDetail";
+import History from "./pages/History";
+
 
 
 import ProtectedRoute from "./components/ProtectedRoute";
@@ -17,6 +19,8 @@ function App() {
       <Route path="/" element={<Landing />} />
       <Route path="/signup" element={<Signup />} />
       <Route path="/login" element={<Login />} />
+      <Route path="/history" element={<History />} />
+
 
       <Route
         path="/dashboard"

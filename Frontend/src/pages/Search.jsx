@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import SearchBar from "../components/SearchBar";
 import SearchResults from "../components/SearchResults";
+import { Link } from "react-router-dom";
+
 
 export default function Search() {
   const [repositories, setRepositories] = useState([]);
@@ -52,25 +54,37 @@ export default function Search() {
   };
 
   return (
-    <div className="p-6">
-      <h1 className="text-xl font-semibold mb-4">Semantic Code Search</h1>
+  <div className="p-6">
+    <h1 className="text-xl font-semibold mb-4">
+      Semantic Code Search
+    </h1>
 
-      <SearchBar
-        onSearch={handleSearch}
-        repositories={repositories}
-      />
+    <SearchBar
+      onSearch={handleSearch}
+      repositories={repositories}
+    />
 
-      {loading && <p className="mt-4">Searching…</p>}
+    {loading && <p className="mt-4">Searching…</p>}
 
-      {error && (
-        <p className="mt-4 text-red-500">{error}</p>
-      )}
+    {error && (
+      <p className="mt-4 text-red-500">{error}</p>
+    )}
 
-      {!loading && hasSearched && results.length === 0 && !error && (
-        <p className="mt-4 text-gray-500">No results found.</p>
-      )}
+    {!loading && hasSearched && results.length === 0 && !error && (
+      <p className="mt-4 text-gray-500">No results found.</p>
+    )}
 
-      <SearchResults results={results} />
+    <SearchResults results={results} />
+
+    <div className="mt-6">
+      <Link
+        to="/history"
+        className="text-blue-600 hover:underline text-sm"
+      >
+        View Search History
+      </Link>
     </div>
-  );
+  </div>
+);
+
 }
