@@ -6,6 +6,8 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import RepositoryDetail from "./pages/RepositoryDetail";
 import Search from "./pages/Search";
+import CodeDetail from "./pages/CodeDetail";
+
 
 import ProtectedRoute from "./components/ProtectedRoute";
 
@@ -42,6 +44,16 @@ function App() {
           </ProtectedRoute>
         }
       />
+
+      <Route
+        path="/code/:id"
+        element={
+          <ProtectedRoute>
+            <CodeDetail />
+         </ProtectedRoute>
+        }
+/>
+
     </Routes>
   );
 }
