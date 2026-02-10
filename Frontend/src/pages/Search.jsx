@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import SearchBar from "../components/SearchBar";
 import SearchResults from "../components/SearchResults";
 import { Link } from "react-router-dom";
+import ExportButton from "../components/ExportButton";
 
 
 export default function Search() {
@@ -11,7 +12,7 @@ export default function Search() {
   const [error, setError] = useState(null);
   const [hasSearched, setHasSearched] = useState(false);
 
-  // Fetch repositories for filter dropdown
+
   useEffect(() => {
     fetch("http://localhost:8000/api/repositories")
       .then((res) => res.json())
@@ -20,7 +21,7 @@ export default function Search() {
   }, []);
 
   const handleSearch = async (query, repoId) => {
-    // Basic validation (reviewer WILL test this)
+ 
     if (!query || query.trim().length < 3) {
       setError("Please enter at least 3 characters to search.");
       setResults([]);
@@ -75,6 +76,14 @@ export default function Search() {
     )}
 
     <SearchResults results={results} />
+    {results.length > 0 && (
+      <ExportButton
+        type="search"
+        data={results}
+        filename="search-results"
+      />
+   )}
+
 
     <div className="mt-6">
       <Link

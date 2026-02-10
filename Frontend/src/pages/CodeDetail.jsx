@@ -3,6 +3,8 @@ import { useParams } from "react-router-dom";
 import CodeExplanation from "../components/CodeExplanation";
 import CopyButton from "../components/CopyButton";
 import CodeViewer from "../components/CodeViewer";
+import ExportButton from "../components/ExportButton";
+
 
 
 
@@ -81,6 +83,12 @@ export default function CodeDetail() {
           {loadingExplain ? "Explaining…" : "Explain Code"}
         </button>
       </div>
+      <ExportButton
+        type="code"
+        data={snippet}
+        filename={`code-snippet-${snippet.id}`}
+      />
+
 
       <CodeExplanation
         explanation={explanation}
