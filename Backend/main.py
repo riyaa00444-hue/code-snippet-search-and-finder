@@ -6,7 +6,7 @@ from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse   # ✅ NEW (required)
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -14,7 +14,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-
+# ---------------- ENV ----------------
 
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -25,6 +25,7 @@ VECTOR_DIR = os.path.join(BASE_DIR, "vector_store")
 
 os.makedirs(VECTOR_DIR, exist_ok=True)
 
+# ---------------- APP ----------------
 
 app = FastAPI(title="Code Snippet Finder API")
 
@@ -36,6 +37,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------- DB ----------------
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -84,11 +86,13 @@ def init_db():
 
 init_db()
 
+# ---------------- MODELS ----------------
 
 class AddRepositoryRequest(BaseModel):
     name: str
     path: str
 
+# ---------------- HELPERS ----------------
 
 def analyze_repository(repo_path: str):
     if not os.path.exists(repo_path):
@@ -116,7 +120,6 @@ def analyze_repository(repo_path: str):
 
 
 def parse_code_file(file_path: str) -> List[str]:
-    """Parse Python with AST, fallback to whole file for JS/TS"""
     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
         source = f.read()
 
@@ -154,33 +157,67 @@ def get_search_history():
         ORDER BY searched_at DESC
     """).fetchall()
     conn.close()
-
     return [dict(r) for r in rows]
 
 
 def delete_search_history(history_id: int):
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute(
-        "DELETE FROM search_history WHERE id = ?",
-        (history_id,)
+    conn.execute("DELETE FROM search_history WHERE id = ?", (history_id,))
+    conn.commit()
+    conn.close()
+
+# ---------------- ISSUE #15 HELPERS ----------------
+
+def get_snippet_ids_by_repository(repo_id: int):
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id FROM code_snippets WHERE repository_id = ?",
+        (repo_id,)
+    ).fetchall()
+    conn.close()
+    return [r["id"] for r in rows]
+
+
+def delete_vector_store():
+    index_path = os.path.join(VECTOR_DIR, "index.faiss")
+    pkl_path = os.path.join(VECTOR_DIR, "index.pkl")
+
+    if os.path.exists(index_path):
+        os.remove(index_path)
+    if os.path.exists(pkl_path):
+        os.remove(pkl_path)
+
+
+def delete_code_snippets_by_repository(repo_id: int):
+    conn = get_db()
+    conn.execute(
+        "DELETE FROM code_snippets WHERE repository_id = ?",
+        (repo_id,)
     )
     conn.commit()
     conn.close()
 
 
+def delete_repository_by_id(repo_id: int):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM repositories WHERE id = ?", (repo_id,))
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+# ---------------- ROUTES ----------------
 
 @app.post("/api/repositories")
 def add_repository(repo: AddRepositoryRequest):
     desc, files = analyze_repository(repo.path)
 
     conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("""
-    INSERT INTO repositories
-    (name, path, description, file_list, file_count, analyzed_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    conn.execute("""
+        INSERT INTO repositories
+        (name, path, description, file_list, file_count, analyzed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
     """, (
         repo.name,
         repo.path,
@@ -189,9 +226,9 @@ def add_repository(repo: AddRepositoryRequest):
         len(files),
         datetime.utcnow().isoformat()
     ))
-
     conn.commit()
     conn.close()
+
     return {"status": "added", "files": len(files)}
 
 
@@ -207,7 +244,8 @@ def list_repositories():
 def get_repository_detail(repo_id: int):
     conn = get_db()
     repo = conn.execute(
-        "SELECT * FROM repositories WHERE id = ?", (repo_id,)
+        "SELECT * FROM repositories WHERE id = ?",
+        (repo_id,)
     ).fetchone()
     conn.close()
 
@@ -217,11 +255,55 @@ def get_repository_detail(repo_id: int):
     return dict(repo)
 
 
+# ==================================================
+# ✅ NEW ENDPOINT (ONLY ADDITION – SAFE)
+# ==================================================
+
+@app.get(
+    "/api/repositories/{repo_id}/file",
+    response_class=PlainTextResponse
+)
+def get_repository_file(repo_id: int, path: str = Query(...)):
+    conn = get_db()
+    repo = conn.execute(
+        "SELECT path FROM repositories WHERE id = ?",
+        (repo_id,)
+    ).fetchone()
+    conn.close()
+
+    if not repo:
+        raise HTTPException(404, "Repository not found")
+    
+    # -------- FIX: clean incoming file path --------
+    clean_path = path.strip()              # remove spaces
+    clean_path = clean_path.strip('"')     # remove "quotes"
+    clean_path = clean_path.strip("'")     # remove 'quotes'
+    clean_path = clean_path.replace("\\", "/")  # Windows → Unix slashes
+
+
+    base_path = os.path.abspath(repo["path"])
+    file_path = os.path.abspath(os.path.join(base_path, clean_path))
+
+
+    # Security: prevent ../../ access
+    if not file_path.startswith(base_path):
+        raise HTTPException(400, "Invalid file path")
+
+    if not os.path.isfile(file_path):
+        raise HTTPException(404, "File not found")
+
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
+
+# ==================================================
+
+
 @app.post("/api/repositories/{repo_id}/index")
 def index_repository(repo_id: int):
     conn = get_db()
     repo = conn.execute(
-        "SELECT * FROM repositories WHERE id = ?", (repo_id,)
+        "SELECT * FROM repositories WHERE id = ?",
+        (repo_id,)
     ).fetchone()
 
     if not repo:
@@ -245,8 +327,8 @@ def index_repository(repo_id: int):
     metadatas = []
     for code in snippets:
         cur = conn.execute("""
-        INSERT INTO code_snippets (repository_id, file_path, code)
-        VALUES (?, ?, ?)
+            INSERT INTO code_snippets (repository_id, file_path, code)
+            VALUES (?, ?, ?)
         """, (repo_id, repo["path"], code))
         metadatas.append({
             "snippet_id": cur.lastrowid,
@@ -256,7 +338,8 @@ def index_repository(repo_id: int):
     FAISS.from_texts(snippets, embeddings, metadatas).save_local(VECTOR_DIR)
 
     conn.execute(
-        "UPDATE repositories SET indexed = 1 WHERE id = ?", (repo_id,)
+        "UPDATE repositories SET indexed = 1 WHERE id = ?",
+        (repo_id,)
     )
     conn.commit()
     conn.close()
@@ -271,9 +354,7 @@ def search_code(
 ):
     index_path = os.path.join(VECTOR_DIR, "index.faiss")
     if not os.path.exists(index_path):
-        raise HTTPException(
-            400, "Search index not found. Index a repository first."
-        )
+        raise HTTPException(400, "Search index not found")
 
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
@@ -294,8 +375,8 @@ def search_code(
             continue
 
         row = conn.execute("""
-        SELECT id, repository_id, file_path, code
-        FROM code_snippets WHERE id = ?
+            SELECT id, repository_id, file_path, code
+            FROM code_snippets WHERE id = ?
         """, (meta.get("snippet_id"),)).fetchone()
 
         if row:
@@ -352,3 +433,23 @@ def remove_history(history_id: int):
     delete_search_history(history_id)
     return {"status": "deleted"}
 
+
+# ---------------- ISSUE #15 DELETE ENDPOINT ----------------
+
+@app.delete("/api/repositories/{repo_id}")
+def delete_repository(repo_id: int):
+    conn = get_db()
+    repo = conn.execute(
+        "SELECT id FROM repositories WHERE id = ?",
+        (repo_id,)
+    ).fetchone()
+    conn.close()
+
+    if not repo:
+        raise HTTPException(404, "Repository not found")
+
+    delete_vector_store()
+    delete_code_snippets_by_repository(repo_id)
+    delete_repository_by_id(repo_id)
+
+    return {"message": "Repository deleted successfully"}
