@@ -13,4 +13,5 @@ database.db
 
 # Environment variables
 .env
-Backend/vector_store/
+vector_store/
+
