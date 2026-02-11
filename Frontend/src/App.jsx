@@ -5,6 +5,10 @@ import Signup from "./pages/Signup";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import RepositoryDetail from "./pages/RepositoryDetail";
+import Search from "./pages/Search";
+import CodeDetail from "./pages/CodeDetail";
+import History from "./pages/History";
+
 
 
 import ProtectedRoute from "./components/ProtectedRoute";
@@ -15,6 +19,9 @@ function App() {
       <Route path="/" element={<Landing />} />
       <Route path="/signup" element={<Signup />} />
       <Route path="/login" element={<Login />} />
+      <Route path="/history" element={<History />} />
+
+
       <Route
         path="/dashboard"
         element={
@@ -23,6 +30,7 @@ function App() {
           </ProtectedRoute>
         }
       />
+
       <Route
         path="/repositories/:id"
         element={
@@ -31,6 +39,24 @@ function App() {
           </ProtectedRoute>
         }
       />
+
+      <Route
+        path="/search"
+        element={
+          <ProtectedRoute>
+            <Search />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/code/:id"
+        element={
+          <ProtectedRoute>
+            <CodeDetail />
+         </ProtectedRoute>
+        }
+/>
 
     </Routes>
   );

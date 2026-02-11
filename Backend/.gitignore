@@ -13,3 +13,5 @@ database.db
 
 # Environment variables
 .env
+vector_store/
+
