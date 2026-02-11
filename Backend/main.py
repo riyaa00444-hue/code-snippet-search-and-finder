@@ -1,12 +1,16 @@
 import os
 import ast
-import sqlite3
+from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
+from sqlalchemy.orm import sessionmaker, declarative_base
+from fastapi import Depends
+from sqlalchemy.orm import Session
+
 from datetime import datetime
 from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse   # ✅ NEW (required)
+from fastapi.responses import PlainTextResponse   
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -14,85 +18,95 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# ---------------- ENV ----------------
 
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine
+)
+
+Base = declarative_base()
+
+
+
+class Repository(Base):
+    __tablename__ = "repositories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String)
+    path = Column(String)
+    description = Column(Text)
+    file_list = Column(Text)
+    file_count = Column(Integer)
+    indexed = Column(Boolean, default=False)
+    analyzed_at = Column(String)
+
+
+class CodeSnippet(Base):
+    __tablename__ = "code_snippets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    repository_id = Column(Integer)
+    file_path = Column(String)
+    code = Column(Text)
+
+
+class SearchHistory(Base):
+    __tablename__ = "search_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    query = Column(String)
+    result_count = Column(Integer)
+    searched_at = Column(String)
+
+Base.metadata.create_all(bind=engine)
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "database.db")
+
 VECTOR_DIR = os.path.join(BASE_DIR, "vector_store")
 
 os.makedirs(VECTOR_DIR, exist_ok=True)
 
-# ---------------- APP ----------------
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 
 app = FastAPI(title="Code Snippet Finder API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------- DB ----------------
-
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
-def init_db():
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS repositories (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        path TEXT,
-        description TEXT,
-        file_list TEXT,
-        file_count INTEGER,
-        indexed INTEGER DEFAULT 0,
-        analyzed_at TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS code_snippets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        repository_id INTEGER,
-        file_path TEXT,
-        code TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS search_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        query TEXT,
-        result_count INTEGER,
-        searched_at TEXT
-    )
-    """)
-
-    conn.commit()
-    conn.close()
-
-
-init_db()
-
-# ---------------- MODELS ----------------
 
 class AddRepositoryRequest(BaseModel):
     name: str
     path: str
 
-# ---------------- HELPERS ----------------
+
 
 def analyze_repository(repo_path: str):
     if not os.path.exists(repo_path):
@@ -137,46 +151,6 @@ def parse_code_file(file_path: str) -> List[str]:
     return [source]
 
 
-def get_code_snippet_by_id(snippet_id: int):
-    conn = get_db()
-    row = conn.execute("""
-        SELECT cs.id, cs.code, cs.file_path, r.name AS repository_name
-        FROM code_snippets cs
-        JOIN repositories r ON cs.repository_id = r.id
-        WHERE cs.id = ?
-    """, (snippet_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def get_search_history():
-    conn = get_db()
-    rows = conn.execute("""
-        SELECT id, query, result_count, searched_at
-        FROM search_history
-        ORDER BY searched_at DESC
-    """).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def delete_search_history(history_id: int):
-    conn = get_db()
-    conn.execute("DELETE FROM search_history WHERE id = ?", (history_id,))
-    conn.commit()
-    conn.close()
-
-# ---------------- ISSUE #15 HELPERS ----------------
-
-def get_snippet_ids_by_repository(repo_id: int):
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT id FROM code_snippets WHERE repository_id = ?",
-        (repo_id,)
-    ).fetchall()
-    conn.close()
-    return [r["id"] for r in rows]
-
 
 def delete_vector_store():
     index_path = os.path.join(VECTOR_DIR, "index.faiss")
@@ -188,104 +162,73 @@ def delete_vector_store():
         os.remove(pkl_path)
 
 
-def delete_code_snippets_by_repository(repo_id: int):
-    conn = get_db()
-    conn.execute(
-        "DELETE FROM code_snippets WHERE repository_id = ?",
-        (repo_id,)
-    )
-    conn.commit()
-    conn.close()
-
-
-def delete_repository_by_id(repo_id: int):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM repositories WHERE id = ?", (repo_id,))
-    deleted = cur.rowcount
-    conn.commit()
-    conn.close()
-    return deleted
 
 # ---------------- ROUTES ----------------
 
 @app.post("/api/repositories")
-def add_repository(repo: AddRepositoryRequest):
+def add_repository(
+    repo: AddRepositoryRequest,
+    db: Session = Depends(get_db)
+):
     desc, files = analyze_repository(repo.path)
 
-    conn = get_db()
-    conn.execute("""
-        INSERT INTO repositories
-        (name, path, description, file_list, file_count, analyzed_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        repo.name,
-        repo.path,
-        desc,
-        ",".join(files),
-        len(files),
-        datetime.utcnow().isoformat()
-    ))
-    conn.commit()
-    conn.close()
+    new_repo = Repository(
+        name=repo.name,
+        path=repo.path,
+        description=desc,
+        file_list=",".join(files),
+        file_count=len(files),
+        analyzed_at=datetime.utcnow().isoformat()
+    )
+
+    db.add(new_repo)
+    db.commit()
+    db.refresh(new_repo)
 
     return {"status": "added", "files": len(files)}
 
 
+
 @app.get("/api/repositories")
-def list_repositories():
-    conn = get_db()
-    rows = conn.execute("SELECT * FROM repositories").fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+def list_repositories(db: Session = Depends(get_db)):
+    repositories = db.query(Repository).all()
+    return repositories
+
 
 
 @app.get("/api/repositories/{repo_id}")
-def get_repository_detail(repo_id: int):
-    conn = get_db()
-    repo = conn.execute(
-        "SELECT * FROM repositories WHERE id = ?",
-        (repo_id,)
-    ).fetchone()
-    conn.close()
+def get_repository_detail(repo_id: int, db: Session = Depends(get_db)):
+    repo = db.query(Repository).filter(Repository.id == repo_id).first()
 
     if not repo:
         raise HTTPException(404, "Repository not found")
 
-    return dict(repo)
-
-
-# ==================================================
-# ✅ NEW ENDPOINT (ONLY ADDITION – SAFE)
-# ==================================================
+    return repo
 
 @app.get(
     "/api/repositories/{repo_id}/file",
     response_class=PlainTextResponse
 )
-def get_repository_file(repo_id: int, path: str = Query(...)):
-    conn = get_db()
-    repo = conn.execute(
-        "SELECT path FROM repositories WHERE id = ?",
-        (repo_id,)
-    ).fetchone()
-    conn.close()
+
+def get_repository_file(
+    repo_id: int,
+    path: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    repo = db.query(Repository).filter(Repository.id == repo_id).first()
 
     if not repo:
         raise HTTPException(404, "Repository not found")
-    
-    # -------- FIX: clean incoming file path --------
-    clean_path = path.strip()              # remove spaces
-    clean_path = clean_path.strip('"')     # remove "quotes"
-    clean_path = clean_path.strip("'")     # remove 'quotes'
-    clean_path = clean_path.replace("\\", "/")  # Windows → Unix slashes
 
+  
+    clean_path = path.strip()
+    clean_path = clean_path.strip('"')
+    clean_path = clean_path.strip("'")
+    clean_path = clean_path.replace("\\", "/")
 
-    base_path = os.path.abspath(repo["path"])
+    base_path = os.path.abspath(repo.path)
     file_path = os.path.abspath(os.path.join(base_path, clean_path))
 
-
-    # Security: prevent ../../ access
     if not file_path.startswith(base_path):
         raise HTTPException(400, "Invalid file path")
 
@@ -295,22 +238,20 @@ def get_repository_file(repo_id: int, path: str = Query(...)):
     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
         return f.read()
 
-# ==================================================
+
 
 
 @app.post("/api/repositories/{repo_id}/index")
-def index_repository(repo_id: int):
-    conn = get_db()
-    repo = conn.execute(
-        "SELECT * FROM repositories WHERE id = ?",
-        (repo_id,)
-    ).fetchone()
+def index_repository(repo_id: int, db: Session = Depends(get_db)):
+
+    repo = db.query(Repository).filter(Repository.id == repo_id).first()
 
     if not repo:
         raise HTTPException(404, "Repository not found")
 
     snippets = []
-    for root, _, files in os.walk(repo["path"]):
+
+    for root, _, files in os.walk(repo.path):
         if "node_modules" in root or ".git" in root:
             continue
         for f in files:
@@ -325,32 +266,33 @@ def index_repository(repo_id: int):
     )
 
     metadatas = []
+
     for code in snippets:
-        cur = conn.execute("""
-            INSERT INTO code_snippets (repository_id, file_path, code)
-            VALUES (?, ?, ?)
-        """, (repo_id, repo["path"], code))
+        snippet = CodeSnippet(
+            repository_id=repo_id,
+            file_path=repo.path,
+            code=code
+        )
+        db.add(snippet)
+        db.flush()  
+
         metadatas.append({
-            "snippet_id": cur.lastrowid,
+            "snippet_id": snippet.id,
             "repository_id": repo_id
         })
 
     FAISS.from_texts(snippets, embeddings, metadatas).save_local(VECTOR_DIR)
 
-    conn.execute(
-        "UPDATE repositories SET indexed = 1 WHERE id = ?",
-        (repo_id,)
-    )
-    conn.commit()
-    conn.close()
+    repo.indexed = True
+    db.commit()
 
     return {"status": "indexed", "snippets": len(snippets)}
-
 
 @app.get("/api/search")
 def search_code(
     query: str = Query(..., min_length=3),
     repoId: Optional[int] = Query(None),
+    db: Session = Depends(get_db)
 ):
     index_path = os.path.join(VECTOR_DIR, "index.faiss")
     if not os.path.exists(index_path):
@@ -366,45 +308,76 @@ def search_code(
 
     results = vector_store.similarity_search_with_score(query, k=5)
 
-    conn = get_db()
     matches = []
 
     for doc, score in results:
         meta = doc.metadata or {}
+
         if repoId and int(meta.get("repository_id", -1)) != int(repoId):
             continue
 
-        row = conn.execute("""
-            SELECT id, repository_id, file_path, code
-            FROM code_snippets WHERE id = ?
-        """, (meta.get("snippet_id"),)).fetchone()
+        snippet = db.query(CodeSnippet).filter(
+            CodeSnippet.id == meta.get("snippet_id")
+        ).first()
 
-        if row:
+        if snippet:
             matches.append({
-                "id": row["id"],
-                "repository_id": row["repository_id"],
-                "file_path": row["file_path"],
-                "code_preview": row["code"][:300],
+                "id": snippet.id,
+                "repository_id": snippet.repository_id,
+                "file_path": snippet.file_path,
+                "code_preview": snippet.code[:300],
                 "similarity_score": float(score),
             })
 
-    conn.close()
+    history_entry = SearchHistory(
+        query=query,
+        result_count=len(matches),
+        searched_at=datetime.utcnow().isoformat()
+    )
+
+    db.add(history_entry)
+    db.commit()
+
     return {"query": query, "count": len(matches), "results": matches}
 
 
+
+
 @app.get("/api/code/{snippet_id}")
-def get_code_detail(snippet_id: int):
-    snippet = get_code_snippet_by_id(snippet_id)
+def get_code_detail(snippet_id: int, db: Session = Depends(get_db)):
+    snippet = db.query(CodeSnippet).filter(
+        CodeSnippet.id == snippet_id
+    ).first()
+
     if not snippet:
         raise HTTPException(404, "Code snippet not found")
-    return snippet
+
+    repo = db.query(Repository).filter(
+        Repository.id == snippet.repository_id
+    ).first()
+
+    return {
+        "id": snippet.id,
+        "repository_id": snippet.repository_id,
+        "file_path": snippet.file_path,
+        "code": snippet.code,
+        "repository_name": repo.name if repo else None
+    }
+
 
 
 @app.post("/api/code/{snippet_id}/explain")
-def explain_code(snippet_id: int):
-    snippet = get_code_snippet_by_id(snippet_id)
+def explain_code(snippet_id: int, db: Session = Depends(get_db)):
+    snippet = db.query(CodeSnippet).filter(
+        CodeSnippet.id == snippet_id
+    ).first()
+
     if not snippet:
         raise HTTPException(404, "Code snippet not found")
+
+    repo = db.query(Repository).filter(
+        Repository.id == snippet.repository_id
+    ).first()
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
@@ -413,43 +386,61 @@ def explain_code(snippet_id: int):
     )
 
     explanation = llm.invoke(f"""
-Repository: {snippet['repository_name']}
-File: {snippet['file_path']}
+Repository: {repo.name if repo else 'Unknown'}
+File: {snippet.file_path}
 
 Explain this code:
-{snippet['code']}
+{snippet.code}
 """).content
 
     return {"snippet_id": snippet_id, "explanation": explanation}
 
 
+
 @app.get("/api/history")
-def fetch_history():
-    return get_search_history()
+def fetch_history(db: Session = Depends(get_db)):
+    history = db.query(SearchHistory).order_by(
+        SearchHistory.searched_at.desc()
+    ).all()
+    return history
+
 
 
 @app.delete("/api/history/{history_id}")
-def remove_history(history_id: int):
-    delete_search_history(history_id)
+def remove_history(history_id: int, db: Session = Depends(get_db)):
+    history = db.query(SearchHistory).filter(
+        SearchHistory.id == history_id
+    ).first()
+
+    if not history:
+        raise HTTPException(404, "History not found")
+
+    db.delete(history)
+    db.commit()
+
     return {"status": "deleted"}
 
 
-# ---------------- ISSUE #15 DELETE ENDPOINT ----------------
 
 @app.delete("/api/repositories/{repo_id}")
-def delete_repository(repo_id: int):
-    conn = get_db()
-    repo = conn.execute(
-        "SELECT id FROM repositories WHERE id = ?",
-        (repo_id,)
-    ).fetchone()
-    conn.close()
+def delete_repository(repo_id: int, db: Session = Depends(get_db)):
+
+    repo = db.query(Repository).filter(Repository.id == repo_id).first()
 
     if not repo:
         raise HTTPException(404, "Repository not found")
 
+  
+    db.query(CodeSnippet).filter(
+        CodeSnippet.repository_id == repo_id
+    ).delete()
+
+
+    db.delete(repo)
+
+    db.commit()
+
+   
     delete_vector_store()
-    delete_code_snippets_by_repository(repo_id)
-    delete_repository_by_id(repo_id)
 
     return {"message": "Repository deleted successfully"}
