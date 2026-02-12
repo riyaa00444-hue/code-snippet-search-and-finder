@@ -15,7 +15,8 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 
@@ -261,9 +262,11 @@ def index_repository(repo_id: int, db: Session = Depends(get_db)):
     if not snippets:
         raise HTTPException(400, "No code files found")
 
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="gemini-embedding-001",
+        google_api_key=GOOGLE_API_KEY
     )
+
 
     metadatas = []
 
@@ -298,9 +301,11 @@ def search_code(
     if not os.path.exists(index_path):
         raise HTTPException(400, "Search index not found")
 
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
+    embeddings = GoogleGenerativeAIEmbeddings(
+       model="gemini-embedding-001",
+       google_api_key=GOOGLE_API_KEY
+)
+
 
     vector_store = FAISS.load_local(
         VECTOR_DIR, embeddings, allow_dangerous_deserialization=True
