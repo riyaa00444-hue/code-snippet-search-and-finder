@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+venv
 # SQLite database
 database.db
 
@@ -15,3 +16,6 @@ database.db
 .env
 vector_store/
 
+
+.vercel/
+node_modules/

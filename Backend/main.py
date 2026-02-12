@@ -441,6 +441,6 @@ def delete_repository(repo_id: int, db: Session = Depends(get_db)):
     db.commit()
 
    
-    delete_vector_store()
+    delete_vector_store()                                                      
 
-    return {"message": "Repository deleted successfully"}
+    return {"message": "Repository deleted successfully"}                                                          
