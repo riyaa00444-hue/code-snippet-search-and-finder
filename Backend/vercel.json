@@ -1,7 +1,8 @@
 {
-  "functions": {
-    "main.py": {
-      "runtime": "python3.11"
+  "builds": [
+    {
+      "src": "main.py",
+      "use": "@vercel/python"
     }
-  }
+  ]
 }
